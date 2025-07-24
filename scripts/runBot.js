@@ -1,19 +1,41 @@
-// scripts/runBot.js
+require('dotenv').config();
+const { ethers } = require("hardhat");
+const axios = require("axios");
 
-require("dotenv").config(); const { ethers } = require("hardhat"); const axios = require("axios");
+// CONFIG
+const BEND_DAO_API = "https://api.benddao.xyz/api/v1/liquidations";
+const BLUR_API = "https://api.thegraph.com/subgraphs/name/blur-exchange/blur";
 
-const BENDDAO_API = "https://api.benddao.xyz/api/v1/liquidations"; // Example endpoint const TARGET_PROFIT_ETH = ethers.utils.parseEther("0.2"); // Minimum profit threshold
+// Strategy thresholds
+const MIN_PROFIT_ETH = 0.2; // Your floor profit margin
+const GAS_ESTIMATE_ETH = 0.015;
 
-async function fetchLiquidationTargets() { try { const response = await axios.get(BENDDAO_API); const liquidations = response.data?.data || []; return liquidations.filter(target => parseFloat(target.profit) >= parseFloat(ethers.utils.formatEther(TARGET_PROFIT_ETH))); } catch (error) { console.error("Error fetching liquidation targets:", error); return []; } }
+async function fetchLiquidations() {
+  const res = await axios.get(BEND_DAO_API);
+  return res.data?.data || [];
+}
 
-async function runBot() { const [deployer] = await ethers.getSigners(); const LiquidationBot = await ethers.getContractFactory("LiquidationBot"); const bot = await LiquidationBot.attach(process.env.CONTRACT_ADDRESS);
+async function estimateProfit(nft) {
+  // Get floor price from Blur or LooksRare
+  // Placeholder: Assume 1.8 ETH floor
+  const floorPrice = 1.8;
+  const debt = parseFloat(nft.debt) || 1.4;
 
-const targets = await fetchLiquidationTargets();
+  return floorPrice - debt - GAS_ESTIMATE_ETH;
+}
 
-if (targets.length === 0) { console.log("No profitable liquidation targets found at this moment."); return; }
+async function run() {
+  const liquidations = await fetchLiquidations();
+  for (let nft of liquidations) {
+    const profit = await estimateProfit(nft);
+    if (profit >= MIN_PROFIT_ETH) {
+      console.log(`🟢 Target Found: ${nft.name} | Estimated Profit: ${profit} ETH`);
+      // Call smart contract here (using ethers.js)
+      // await contract.executeLiquidation(...);
+    } else {
+      console.log(`🔴 Skipped: ${nft.name} | Profit too low`);
+    }
+  }
+}
 
-for (const target of targets) { try { console.log(Attempting liquidation for target: ${target.nftId}); const tx = await bot.liquidate(target.nftId, target.debtAmount, { gasLimit: 8000000, }); await tx.wait(); console.log(Liquidation executed for ${target.nftId}); } catch (err) { console.error(Error executing liquidation for ${target.nftId}:, err); } } }
-
-runBot();
-
-  
+run();
