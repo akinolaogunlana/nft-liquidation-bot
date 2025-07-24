@@ -1,34 +1,19 @@
-require("dotenv").config();
-const axios = require("axios");
-const { ethers } = require("hardhat");
+// scripts/runBot.js
 
-const blurAPI = "https://api.blur.io/collections"; // Example
+require("dotenv").config(); const { ethers } = require("hardhat"); const axios = require("axios");
 
-async function getFloorPrice(collectionSlug) {
-  const { data } = await axios.get(`${blurAPI}/${collectionSlug}`);
-  return data.floorPrice;
-}
+const BENDDAO_API = "https://api.benddao.xyz/api/v1/liquidations"; // Example endpoint const TARGET_PROFIT_ETH = ethers.utils.parseEther("0.2"); // Minimum profit threshold
 
-async function runBot() {
-  const floor = await getFloorPrice("azuki");
-  const onChainFloor = await getOnChainPrice();
+async function fetchLiquidationTargets() { try { const response = await axios.get(BENDDAO_API); const liquidations = response.data?.data || []; return liquidations.filter(target => parseFloat(target.profit) >= parseFloat(ethers.utils.formatEther(TARGET_PROFIT_ETH))); } catch (error) { console.error("Error fetching liquidation targets:", error); return []; } }
 
-  if (floor < onChainFloor * 0.9) {
-    console.log("Opportunity found!");
+async function runBot() { const [deployer] = await ethers.getSigners(); const LiquidationBot = await ethers.getContractFactory("LiquidationBot"); const bot = await LiquidationBot.attach(process.env.CONTRACT_ADDRESS);
 
-    const Bot = await ethers.getContractFactory("LiquidationBot");
-    const bot = await Bot.attach(process.env.BOT_ADDRESS);
+const targets = await fetchLiquidationTargets();
 
-    const tx = await bot.requestFlashLoan(
-      process.env.FLASH_ASSET,
-      ethers.utils.parseEther("10"),
-      process.env.BORROWER,
-      process.env.TOKEN_ID
-    );
+if (targets.length === 0) { console.log("No profitable liquidation targets found at this moment."); return; }
 
-    await tx.wait();
-    console.log("Liquidation executed.");
-  }
-}
+for (const target of targets) { try { console.log(Attempting liquidation for target: ${target.nftId}); const tx = await bot.liquidate(target.nftId, target.debtAmount, { gasLimit: 8000000, }); await tx.wait(); console.log(Liquidation executed for ${target.nftId}); } catch (err) { console.error(Error executing liquidation for ${target.nftId}:, err); } } }
 
-runBot().catch(console.error);
+runBot();
+
+  
