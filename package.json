@@ -1,1 +1,17 @@
-# Node.js dependencies
+{
+  "name": "nft-liquidation-bot",
+  "version": "1.0.0",
+  "description": "A profitable NFT liquidation and flipping bot using Aave flash loans, BendDAO, and Blur.",
+  "scripts": {
+    "test": "npx hardhat test",
+    "compile": "npx hardhat compile",
+    "deploy": "npx hardhat run deploy.js"
+  },
+  "dependencies": {
+    "@aave/core-v3": "^1.0.0",
+    "@openzeppelin/contracts": "^4.9.0",
+    "dotenv": "^16.3.1",
+    "ethers": "^6.7.0",
+    "hardhat": "^2.22.0"
+  }
+}
