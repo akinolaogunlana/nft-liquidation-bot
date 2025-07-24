@@ -1,28 +1,34 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-// Aave v3 Flash Loan Interface
 import "@aave/core-v3/contracts/interfaces/IPool.sol";
 import "@aave/core-v3/contracts/flashloan/interfaces/IFlashLoanSimpleReceiver.sol";
-
-// OpenZeppelin Contracts
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-// For local testing/debugging
-import "hardhat/console.sol";
-
-// Interface for BendDAO NFT liquidation
 interface IBendDAO {
     function liquidateERC721(address nftAsset, uint256 tokenId) external payable;
 }
 
+interface IBlurMarketplace {
+    function sellNFT(address nft, uint256 tokenId, uint256 minPrice) external;
+}
+
 contract LiquidationBot is IFlashLoanSimpleReceiver, Ownable {
-    address public immutable pool;           // Aave v3 Lending Pool
-    address public immutable WETH;           // WETH Token
-    IBendDAO public bendDAO;                 // BendDAO interface
-    address public immutable blurMarketplace; // NFT resale marketplace
+    // Immutable addresses for flash loan and token contracts
+    address public immutable pool;
+    address public immutable WETH;
+
+    // Protocol interfaces
+    IBendDAO public bendDAO;
+    IBlurMarketplace public blurMarketplace;
+
+    // Events for logging
+    event FlashLoanRequested(uint256 amount, address nft, uint256 tokenId);
+    event LiquidationSuccessful(address nft, uint256 tokenId);
+    event NFTSold(address nft, uint256 tokenId, uint256 price);
+    event FlashLoanRepaid(uint256 totalRepayment);
 
     constructor(
         address _aavePool,
@@ -33,33 +39,17 @@ contract LiquidationBot is IFlashLoanSimpleReceiver, Ownable {
         pool = _aavePool;
         WETH = _weth;
         bendDAO = IBendDAO(_bendDao);
-        blurMarketplace = _blurMarketplace;
+        blurMarketplace = IBlurMarketplace(_blurMarketplace);
     }
 
-    /**
-     * @dev Triggers the flash loan and NFT liquidation operation
-     * @param amount Amount of WETH to borrow
-     * @param nft NFT contract address
-     * @param tokenId NFT token ID to liquidate
-     */
-    function requestFlashLoan(
-        uint256 amount,
-        address nft,
-        uint256 tokenId
-    ) external onlyOwner {
+    /// @notice Trigger the flash loan to liquidate an NFT
+    function requestFlashLoan(uint256 amount, address nft, uint256 tokenId) external onlyOwner {
         bytes memory params = abi.encode(nft, tokenId);
-        IPool(pool).flashLoanSimple(
-            address(this),
-            WETH,
-            amount,
-            params,
-            0 // referralCode
-        );
+        emit FlashLoanRequested(amount, nft, tokenId);
+        IPool(pool).flashLoanSimple(address(this), WETH, amount, params, 0);
     }
 
-    /**
-     * @dev Aave calls this after flash loan is issued
-     */
+    /// @notice Aave callback that executes once the flash loan is granted
     function executeOperation(
         address asset,
         uint256 amount,
@@ -67,34 +57,30 @@ contract LiquidationBot is IFlashLoanSimpleReceiver, Ownable {
         address initiator,
         bytes calldata params
     ) external override returns (bool) {
-        require(msg.sender == pool, "Untrusted lender");
-        require(initiator == address(this), "Not initiated by contract");
+        require(msg.sender == pool, "Unauthorized caller");
+        require(initiator == address(this), "Invalid initiator");
+        require(asset == WETH, "Unsupported asset");
 
         (address nft, uint256 tokenId) = abi.decode(params, (address, uint256));
 
-        console.log("Executing flash loan liquidation...");
-        console.log("NFT: %s", nft);
-        console.log("TokenID: %s", tokenId);
-
-        // Approve WETH to BendDAO
+        // 1. Liquidate the NFT on BendDAO
         IERC20(WETH).approve(address(bendDAO), amount);
-
-        // Perform NFT liquidation on BendDAO
         bendDAO.liquidateERC721{value: 0}(nft, tokenId);
+        emit LiquidationSuccessful(nft, tokenId);
 
-        // Approve NFT for resale on Blur
-        IERC721(nft).approve(blurMarketplace, tokenId);
+        // 2. Sell the NFT on Blur (off-chain logic or oracle driven)
+        IERC721(nft).approve(address(blurMarketplace), tokenId);
+        uint256 minPrice = amount + premium + 1e15; // + safety margin
+        blurMarketplace.sellNFT(nft, tokenId, minPrice);
+        emit NFTSold(nft, tokenId, minPrice);
 
-        // NOTE: You should call resale logic off-chain via a bot or backend API to Blur
-        // Example: via Seaport SDK or Blur API (currently off-chain)
-
-        // Repay Aave flash loan
+        // 3. Repay the flash loan
         uint256 totalRepayment = amount + premium;
         IERC20(WETH).approve(pool, totalRepayment);
+        emit FlashLoanRepaid(totalRepayment);
 
         return true;
     }
 
-    // To receive native ETH if needed
     receive() external payable {}
 }
