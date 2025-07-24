@@ -12,22 +12,18 @@ interface IBendDAO {
 }
 
 interface IBlurMarketplace {
-    function sellNFT(address nft, uint256 tokenId, uint256 minPrice) external;
+    function sellNFT(address nftAsset, uint256 tokenId, uint256 minPrice) external;
 }
 
 contract LiquidationBot is IFlashLoanSimpleReceiver, Ownable {
-    // Immutable addresses for flash loan and token contracts
     address public immutable pool;
     address public immutable WETH;
-
-    // Protocol interfaces
     IBendDAO public bendDAO;
     IBlurMarketplace public blurMarketplace;
 
-    // Events for logging
     event FlashLoanRequested(uint256 amount, address nft, uint256 tokenId);
-    event LiquidationSuccessful(address nft, uint256 tokenId);
-    event NFTSold(address nft, uint256 tokenId, uint256 price);
+    event LiquidationExecuted(address nft, uint256 tokenId);
+    event NFTListedForSale(address nft, uint256 tokenId);
     event FlashLoanRepaid(uint256 totalRepayment);
 
     constructor(
@@ -42,14 +38,14 @@ contract LiquidationBot is IFlashLoanSimpleReceiver, Ownable {
         blurMarketplace = IBlurMarketplace(_blurMarketplace);
     }
 
-    /// @notice Trigger the flash loan to liquidate an NFT
+    /// @notice Initiate flash loan to begin liquidation
     function requestFlashLoan(uint256 amount, address nft, uint256 tokenId) external onlyOwner {
         bytes memory params = abi.encode(nft, tokenId);
         emit FlashLoanRequested(amount, nft, tokenId);
         IPool(pool).flashLoanSimple(address(this), WETH, amount, params, 0);
     }
 
-    /// @notice Aave callback that executes once the flash loan is granted
+    /// @notice Aave Flash Loan callback
     function executeOperation(
         address asset,
         uint256 amount,
@@ -57,24 +53,22 @@ contract LiquidationBot is IFlashLoanSimpleReceiver, Ownable {
         address initiator,
         bytes calldata params
     ) external override returns (bool) {
-        require(msg.sender == pool, "Unauthorized caller");
-        require(initiator == address(this), "Invalid initiator");
-        require(asset == WETH, "Unsupported asset");
+        require(msg.sender == pool, "Untrusted pool");
+        require(initiator == address(this), "Not self-initiated");
 
         (address nft, uint256 tokenId) = abi.decode(params, (address, uint256));
 
-        // 1. Liquidate the NFT on BendDAO
+        // Step 1: Liquidate NFT from BendDAO
         IERC20(WETH).approve(address(bendDAO), amount);
         bendDAO.liquidateERC721{value: 0}(nft, tokenId);
-        emit LiquidationSuccessful(nft, tokenId);
+        emit LiquidationExecuted(nft, tokenId);
 
-        // 2. Sell the NFT on Blur (off-chain logic or oracle driven)
+        // Step 2: Approve and list NFT on Blur (simulate)
         IERC721(nft).approve(address(blurMarketplace), tokenId);
-        uint256 minPrice = amount + premium + 1e15; // + safety margin
-        blurMarketplace.sellNFT(nft, tokenId, minPrice);
-        emit NFTSold(nft, tokenId, minPrice);
+        blurMarketplace.sellNFT(nft, tokenId, 0); // Placeholder: 0 = accept any price
+        emit NFTListedForSale(nft, tokenId);
 
-        // 3. Repay the flash loan
+        // Step 3: Repay flash loan
         uint256 totalRepayment = amount + premium;
         IERC20(WETH).approve(pool, totalRepayment);
         emit FlashLoanRepaid(totalRepayment);
@@ -82,5 +76,6 @@ contract LiquidationBot is IFlashLoanSimpleReceiver, Ownable {
         return true;
     }
 
+    /// @notice Receive ETH fallback
     receive() external payable {}
 }
