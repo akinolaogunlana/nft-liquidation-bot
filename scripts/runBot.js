@@ -1,23 +1,34 @@
-const { expect } = require("chai");
+require("dotenv").config();
+const axios = require("axios");
 const { ethers } = require("hardhat");
 
-describe("LiquidationBot", function () {
-  it("should initiate a flash loan and liquidate NFT", async function () {
-    const [deployer] = await ethers.getSigners();
+const blurAPI = "https://api.blur.io/collections"; // Example
+
+async function getFloorPrice(collectionSlug) {
+  const { data } = await axios.get(`${blurAPI}/${collectionSlug}`);
+  return data.floorPrice;
+}
+
+async function runBot() {
+  const floor = await getFloorPrice("azuki");
+  const onChainFloor = await getOnChainPrice();
+
+  if (floor < onChainFloor * 0.9) {
+    console.log("Opportunity found!");
 
     const Bot = await ethers.getContractFactory("LiquidationBot");
-    const bot = await Bot.deploy("0x...AaveProvider"); // replace with actual address
-
-    await bot.updateTargets("0x...NFTContract", "0x...Marketplace");
+    const bot = await Bot.attach(process.env.BOT_ADDRESS);
 
     const tx = await bot.requestFlashLoan(
-      "0x...WETH", // token
-      ethers.utils.parseEther("10"), // amount
-      "0x...BorrowerAddress", // NFT borrower
-      1234 // Token ID
+      process.env.FLASH_ASSET,
+      ethers.utils.parseEther("10"),
+      process.env.BORROWER,
+      process.env.TOKEN_ID
     );
 
     await tx.wait();
-    console.log("Flash loan requested");
-  });
-});
+    console.log("Liquidation executed.");
+  }
+}
+
+runBot().catch(console.error);
