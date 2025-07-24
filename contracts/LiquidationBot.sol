@@ -1,57 +1,57 @@
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+// SPDX-License-Identifier: MIT pragma solidity ^0.8.20;
 
-import "@aave/core-v3/contracts/flashloan/base/FlashLoanSimpleReceiverBase.sol";
-import "@aave/core-v3/contracts/interfaces/IPoolAddressesProvider.sol";
-import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "@aave/core-v3/contracts/interfaces/IPool.sol"; import "@aave/core-v3/contracts/flashloan/interfaces/IFlashLoanSimpleReceiver.sol"; import "@openzeppelin/contracts/token/ERC721/IERC721.sol"; import "@openzeppelin/contracts/token/ERC20/IERC20.sol"; import "@openzeppelin/contracts/access/Ownable.sol"; import "hardhat/console.sol";
 
-contract LiquidationBot is FlashLoanSimpleReceiverBase, Ownable {
-    address public liquidationTarget;
-    address public nftMarketplace;
+interface IBendDAO { function liquidateERC721(address nftAsset, uint256 tokenId) external payable; }
 
-    constructor(address _provider) FlashLoanSimpleReceiverBase(IPoolAddressesProvider(_provider)) {}
+contract LiquidationBot is IFlashLoanSimpleReceiver, Ownable { address public immutable pool; address public immutable WETH; IBendDAO public bendDAO; address public immutable blurMarketplace;
 
-    function executeOperation(
-        address asset,
-        uint256 amount,
-        uint256 premium,
-        address initiator,
-        bytes calldata params
-    ) external override returns (bool) {
-        // Liquidate the NFT position
-        // params should include the NFT and loan target
-        (address borrower, uint256 tokenId) = abi.decode(params, (address, uint256));
-
-        // Trigger liquidation on BendDAO / Paraspace
-        // (Call the liquidation function of the protocol)
-        // You can add an interface and call here
-
-        // Sell NFT instantly on external market
-        IERC721 nft = IERC721(liquidationTarget);
-        nft.approve(nftMarketplace, tokenId);
-
-        // TODO: Add logic to sell NFT via marketplace (e.g., Seaport or custom)
-
-        // Repay flash loan
-        uint256 totalDebt = amount + premium;
-        IERC20(asset).approve(address(POOL), totalDebt);
-
-        return true;
-    }
-
-    function requestFlashLoan(
-        address token,
-        uint256 amount,
-        address borrower,
-        uint256 tokenId
-    ) external onlyOwner {
-        bytes memory params = abi.encode(borrower, tokenId);
-        POOL.flashLoanSimple(address(this), token, amount, params, 0);
-    }
-
-    function updateTargets(address _liquidationTarget, address _marketplace) external onlyOwner {
-        liquidationTarget = _liquidationTarget;
-        nftMarketplace = _marketplace;
-    }
+constructor(
+    address _aavePool,
+    address _weth,
+    address _bendDao,
+    address _blurMarketplace
+) {
+    pool = _aavePool;
+    WETH = _weth;
+    bendDAO = IBendDAO(_bendDao);
+    blurMarketplace = _blurMarketplace;
 }
+
+function requestFlashLoan(uint256 amount, address nft, uint256 tokenId) external onlyOwner {
+    bytes memory params = abi.encode(nft, tokenId);
+    IPool(pool).flashLoanSimple(address(this), WETH, amount, params, 0);
+}
+
+function executeOperation(
+    address asset,
+    uint256 amount,
+    uint256 premium,
+    address initiator,
+    bytes calldata params
+) external override returns (bool) {
+    require(msg.sender == pool, "Untrusted lender");
+    require(initiator == address(this), "Not initiated by contract");
+
+    (address nft, uint256 tokenId) = abi.decode(params, (address, uint256));
+
+    // 1. Liquidate NFT on BendDAO
+    IERC20(WETH).approve(address(bendDAO), amount);
+    bendDAO.liquidateERC721{value: 0}(nft, tokenId);
+
+    // 2. Transfer to Blur marketplace to sell
+    IERC721(nft).approve(blurMarketplace, tokenId);
+
+    // (Here, real resale logic on Blur would be triggered via off-chain or custom SDK call)
+
+    // 3. Repay flash loan
+    uint256 totalRepayment = amount + premium;
+    IERC20(WETH).approve(pool, totalRepayment);
+
+    return true;
+}
+
+receive() external payable {}
+
+}
+
