@@ -1,81 +1,78 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.19;
 
+import "@aave/core-v3/contracts/flashloan/base/FlashLoanSimpleReceiverBase.sol";
+import "@aave/core-v3/contracts/interfaces/IPoolAddressesProvider.sol";
 import "@aave/core-v3/contracts/interfaces/IPool.sol";
-import "@aave/core-v3/contracts/flashloan/interfaces/IFlashLoanSimpleReceiver.sol";
-import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 
 interface IBendDAO {
-    function liquidateERC721(address nftAsset, uint256 tokenId) external payable;
+    function liquidate(
+        address nftAsset,
+        uint256 tokenId
+    ) external;
 }
 
-interface IBlurMarketplace {
-    function sellNFT(address nftAsset, uint256 tokenId, uint256 minPrice) external;
-}
+contract LiquidationBot is FlashLoanSimpleReceiverBase {
+    address public owner;
+    address public bendDao;
+    address public nftAsset;
+    uint256 public tokenId;
 
-contract LiquidationBot is IFlashLoanSimpleReceiver, Ownable {
-    address public immutable pool;
-    address public immutable WETH;
-    IBendDAO public bendDAO;
-    IBlurMarketplace public blurMarketplace;
-
-    event FlashLoanRequested(uint256 amount, address nft, uint256 tokenId);
-    event LiquidationExecuted(address nft, uint256 tokenId);
-    event NFTListedForSale(address nft, uint256 tokenId);
-    event FlashLoanRepaid(uint256 totalRepayment);
-
-    constructor(
-        address _aavePool,
-        address _weth,
-        address _bendDao,
-        address _blurMarketplace
-    ) {
-        pool = _aavePool;
-        WETH = _weth;
-        bendDAO = IBendDAO(_bendDao);
-        blurMarketplace = IBlurMarketplace(_blurMarketplace);
+    constructor(address _addressProvider, address _bendDao)
+        FlashLoanSimpleReceiverBase(IPoolAddressesProvider(_addressProvider))
+    {
+        owner = msg.sender;
+        bendDao = _bendDao;
     }
 
-    /// @notice Initiate flash loan to begin liquidation
-    function requestFlashLoan(uint256 amount, address nft, uint256 tokenId) external onlyOwner {
-        bytes memory params = abi.encode(nft, tokenId);
-        emit FlashLoanRequested(amount, nft, tokenId);
-        IPool(pool).flashLoanSimple(address(this), WETH, amount, params, 0);
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not owner");
+        _;
     }
 
-    /// @notice Aave Flash Loan callback
+    function executeLiquidation(
+        address _asset,
+        uint256 _amount,
+        address _nftAsset,
+        uint256 _tokenId
+    ) external onlyOwner {
+        nftAsset = _nftAsset;
+        tokenId = _tokenId;
+
+        // Start flash loan
+        POOL.flashLoanSimple(
+            address(this), // Receiver
+            _asset,        // Token to borrow
+            _amount,       // Amount
+            "",            // Params
+            0              // Referral code
+        );
+    }
+
     function executeOperation(
         address asset,
         uint256 amount,
         uint256 premium,
         address initiator,
-        bytes calldata params
+        bytes calldata
     ) external override returns (bool) {
-        require(msg.sender == pool, "Untrusted pool");
-        require(initiator == address(this), "Not self-initiated");
+        require(msg.sender == address(POOL), "Caller is not POOL");
 
-        (address nft, uint256 tokenId) = abi.decode(params, (address, uint256));
+        // Liquidate undercollateralized NFT on BendDAO
+        IBendDAO(bendDao).liquidate(nftAsset, tokenId);
 
-        // Step 1: Liquidate NFT from BendDAO
-        IERC20(WETH).approve(address(bendDAO), amount);
-        bendDAO.liquidateERC721{value: 0}(nft, tokenId);
-        emit LiquidationExecuted(nft, tokenId);
-
-        // Step 2: Approve and list NFT on Blur (simulate)
-        IERC721(nft).approve(address(blurMarketplace), tokenId);
-        blurMarketplace.sellNFT(nft, tokenId, 0); // Placeholder: 0 = accept any price
-        emit NFTListedForSale(nft, tokenId);
-
-        // Step 3: Repay flash loan
-        uint256 totalRepayment = amount + premium;
-        IERC20(WETH).approve(pool, totalRepayment);
-        emit FlashLoanRepaid(totalRepayment);
+        // Repay flash loan
+        uint256 totalOwed = amount + premium;
+        IERC20(asset).approve(address(POOL), totalOwed);
 
         return true;
     }
 
-    /// @notice Receive ETH fallback
-    receive() external payable {}
+    function withdrawToken(address token) external onlyOwner {
+        IERC20(token).transfer(owner, IERC20(token).balanceOf(address(this)));
+    }
+
+    function withdrawNFT(address nft, uint256 _tokenId) external onlyOwner {
+        IERC721(nft).transferFrom(address(this), owner, _tokenId);
+    }
 }
